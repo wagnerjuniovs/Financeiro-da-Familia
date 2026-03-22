@@ -71,7 +71,7 @@ ul,ol{list-style:none}
 .sum-item:first-child{padding-left:0}
 .sum-item:last-child{border-right:none;padding-right:0}
 .sum-lbl{font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
-.sum-val{font-size:18px;font-weight:800;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sum-val{font-size:18px;font-weight:800;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .sum-val.pos{color:var(--green)}
 .sum-val.neg{color:var(--red)}
 @media(max-width:480px){.sum-val{font-size:15px}}
@@ -108,7 +108,7 @@ ul,ol{list-style:none}
 .tbl tr:last-child td{border-bottom:none}
 .tbl tr:hover td{background:rgba(0,0,0,.015)}
 [data-theme=dark] .tbl tr:hover td{background:rgba(255,255,255,.015)}
-.tbl .val{font-weight:700;text-align:right;white-space:nowrap}
+.tbl .val{font-weight:700;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .tbl .val.r{color:var(--green)}
 .tbl .acts{text-align:right;white-space:nowrap;width:1%}
 .abtn{padding:4px;border-radius:var(--r-sm);color:var(--txt3);transition:var(--tr);display:inline-flex;vertical-align:middle}
@@ -132,7 +132,7 @@ ul,ol{list-style:none}
 .crd:active{transform:scale(.99);opacity:.9}
 .crd-r1{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .crd-desc{font-size:15px;font-weight:700;color:var(--txt);flex:1;line-height:1.3}
-.crd-val{font-size:15px;font-weight:800;white-space:nowrap}
+.crd-val{font-size:15px;font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums}
 .crd-val.r{color:var(--green)}
 .crd-r2{margin-top:4px;font-size:12px;color:var(--txt3)}
 .crd-r3,.crd-r4{margin-top:6px;font-size:12px;color:var(--txt2)}
@@ -302,7 +302,7 @@ ul,ol{list-style:none}
 
 /* ── MOBILE OPTIMIZATIONS ─────────────────────────────── */
 
-/* 
+/*
   MODAL AS BOTTOM SHEET ON MOBILE
   Slides up from the bottom, respects safe area, fully scrollable
 */
@@ -316,17 +316,20 @@ ul,ol{list-style:none}
   .modal{
     max-width:100%;
     width:100%;
+    /* Prevent Safari from allowing it to exceed screen width */
+    box-sizing:border-box;
     border-radius:20px 20px 0 0;
     max-height:92dvh;
-    /* Flex column so body scrolls and footer stays sticky at bottom */
     display:flex;
     flex-direction:column;
     transform:translateY(100%);
+    /* Ensure no horizontal overflow on real iPhone */
+    overflow-x:hidden;
   }
   .ov.on .modal{
     transform:translateY(0);
   }
-  /* Add drag handle pseudo-element above header */
+  /* Drag handle */
   .modal::before{
     content:'';
     display:block;
@@ -341,14 +344,21 @@ ul,ol{list-style:none}
   .m-hdr{
     padding:10px 16px 12px;
     flex-shrink:0;
+    box-sizing:border-box;
+    width:100%;
   }
-  /* Body: flex-grow so it fills available space, scrollable */
+  /* Body: flex-grow, scrollable, strictly contained */
   .m-body{
     padding:14px 16px 8px;
     flex:1;
     overflow-y:auto;
+    overflow-x:hidden;
     -webkit-overflow-scrolling:touch;
     overscroll-behavior:contain;
+    box-sizing:border-box;
+    width:100%;
+    /* Prevent children from blowing out width */
+    min-width:0;
   }
   /* Footer: stays at bottom, safe area aware */
   .m-foot{
@@ -357,32 +367,73 @@ ul,ol{list-style:none}
     flex-shrink:0;
     background:var(--sur);
     border-top:1px solid var(--bdr);
+    box-sizing:border-box;
+    width:100%;
   }
 
-  /* Prevent iOS zoom on all inputs (must be ≥16px) */
+  /* ── ALL form elements: fully contained, no iOS zoom ── */
   .fld input,
   .fld select,
   .fld textarea{
-    font-size:16px;
+    font-size:16px;   /* prevent iOS auto-zoom */
+    width:100%;
+    max-width:100%;
+    min-width:0;
+    box-sizing:border-box;
   }
 
-  /* Larger tap targets for bin-btn */
+  /* ── iOS date input fix: Safari renders it natively and ignores width ── */
+  .fld input[type=date]{
+    -webkit-appearance:none;
+    appearance:none;
+    width:100%;
+    max-width:100%;
+    min-width:0;
+    box-sizing:border-box;
+    display:block;
+    /* Ensure the value text is left-aligned like other inputs */
+    text-align:left;
+  }
+
+  /* ── row2: always 1 column inside the modal on real devices ── */
+  .m-body .row2{
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+  .m-body .row2 > *{
+    min-width:0;
+    width:100%;
+    box-sizing:border-box;
+  }
+
+  /* ── bin-grp: keep side-by-side, but ensure it doesn't overflow ── */
+  .bin-grp{
+    grid-template-columns:1fr 1fr;
+    width:100%;
+    box-sizing:border-box;
+  }
   .bin-btn{
-    padding:13px 10px;
-    font-size:16px;
+    padding:13px 8px;
+    font-size:15px;
+    min-width:0;
+    box-sizing:border-box;
   }
 
-  /* Slightly bigger choice cards for thumb tap */
+  /* ── choices: full width cards ── */
   .ch-card{
     padding:14px;
     min-height:62px;
+    box-sizing:border-box;
+    width:100%;
   }
 
-  /* Btn full comfortable */
+  /* ── Btn full comfortable ── */
   .btn-full{
     padding:15px;
     font-size:16px;
     border-radius:12px;
+    width:100%;
+    box-sizing:border-box;
   }
 
   /* Step back larger tap area */
@@ -391,12 +442,9 @@ ul,ol{list-style:none}
     font-size:14px;
   }
 
-  /* row2 already 1 col on <640 but reinforce */
-  .row2{ grid-template-columns:1fr; }
-  .bin-grp{ grid-template-columns:1fr 1fr; }
-
   /* Fields last item margin */
   .fld:last-child{ margin-bottom:8px; }
+  .fld{ min-width:0; width:100%; box-sizing:border-box; }
 
   /* info-box spacing */
   .info-box{ font-size:13px; }
@@ -407,25 +455,30 @@ ul,ol{list-style:none}
   /* Bottom sheet (detail/actions) safe area */
   .sheet{
     padding-bottom: max(32px, env(safe-area-inset-bottom, 32px));
+    box-sizing:border-box;
+    width:100%;
+    overflow-x:hidden;
   }
 
   /* Summary values slightly smaller */
   .sum-val{ font-size:14px; }
   .sum-lbl{ font-size:10px; }
 
-  /* Cards slightly more spaced */
-  .crd{ padding:14px; }
+  /* Cards */
+  .crd{ padding:14px; box-sizing:border-box; }
   .crd-desc{ font-size:15px; }
   .crd-val{ font-size:15px; }
 
-  /* Filter row wraps better */
+  /* Filter row */
   .f-mobile-row{ gap:6px; }
   .f-sel-m{
     font-size:14px;
     padding:9px 10px;
+    min-width:0;
+    box-sizing:border-box;
   }
 
-  /* Header slightly taller on mobile for thumb comfort */
+  /* Header */
   .hdr-in{ height:52px; }
   .sel-btn{ font-size:14px; padding:6px 10px; }
   .btn{ font-size:14px; padding:8px 14px; }
@@ -1159,7 +1212,7 @@ window.openPicker = (type, e)=>{
   if(type==='mes'){
     p.innerHTML = MESES.map((m,i)=>`<div class="pckr-item ${S.mes===i?'act':''}" onclick="selectMes(${i})">${m}</div>`).join('');
   } else {
-    const yrs = []; for(let y=S.ano-3;y<=S.ano+2;y++) yrs.push(y);
+    const yrs = []; for(let y=2023;y<=2035;y++) yrs.push(y);
     p.innerHTML = yrs.map(y=>`<div class="pckr-item ${S.ano===y?'act':''}" onclick="selectAno(${y})">${y}</div>`).join('');
   }
   p.classList.add('on');
@@ -1417,7 +1470,7 @@ function renderDespesaWizard(w, body, foot){
       <div class="choices">
         <div class="ch-card" onclick="wizDespesaSubtipo('avulsa')">
           <span class="ch-icon">⚡</span>
-          <div><div class="ch-label">Compra do dia</div><div class="ch-sub">Supermercado, farmácia, compra única</div></div>
+          <div><div class="ch-label">PIX, Débito ou Dinheiro</div><div class="ch-sub">Paguei agora — dinheiro já saiu da conta</div></div>
         </div>
         <div class="ch-card" onclick="wizDespesaSubtipo('cartao')">
           <span class="ch-icon">💳</span>
@@ -1425,7 +1478,7 @@ function renderDespesaWizard(w, body, foot){
         </div>
         <div class="ch-card" onclick="wizDespesaSubtipo('recorrente')">
           <span class="ch-icon">🔄</span>
-          <div><div class="ch-label">Todo mês</div><div class="ch-sub">Água, luz, escola, boleto mensal</div></div>
+          <div><div class="ch-label">Todo mês (sem cartão de crédito)</div><div class="ch-sub">Água, luz, clube, escola, judo — boleto ou débito automático</div></div>
         </div>
       </div>`;
     return;
@@ -1441,19 +1494,17 @@ function renderDespesaWizard(w, body, foot){
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>Voltar
       </div>
       <div class="fld"><label>Descrição</label><input id="w-desc" placeholder="Ex: Supermercado, farmácia..." value="${d.descricao||''}"></div>
-      <div class="row2">
-        <div class="fld"><label>Valor (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}"></div>
-        <div class="fld"><label>Quando você fez essa compra?</label><input id="w-date" type="date" value="${d.data||hoje}"></div>
-      </div>
+      <div class="fld"><label>Valor (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}"></div>
+      <div class="fld"><label>Quando você fez essa compra?</label><input id="w-date" type="date" value="${d.data||hoje}"></div>
       <div class="fld"><label>Forma de pagamento</label><select id="w-forma"><option value="">—</option>${formaOpts}</select></div>
-      <div class="row2">
+      <div id="venc-wrap" style="display:${d.pago===true?'none':'block'}">
         <div class="fld"><label>Vence em</label><input id="w-venc" type="date" value="${d.vencimento||d.data||hoje}"></div>
-        <div class="fld">
-          <label>Situação</label>
-          <div class="bin-grp">
-            <button type="button" class="bin-btn ${d.pago===true?'sel':''}" id="pago-s" onclick="wizSetPago(true)">Já paguei</button>
-            <button type="button" class="bin-btn ${d.pago===false?'sel':''}" id="pago-n" onclick="wizSetPago(false)">Ainda vou pagar</button>
-          </div>
+      </div>
+      <div class="fld">
+        <label>Situação</label>
+        <div class="bin-grp">
+          <button type="button" class="bin-btn ${d.pago===true?'sel':''}" id="pago-s" onclick="wizSetPago(true)">Já paguei</button>
+          <button type="button" class="bin-btn ${d.pago===false?'sel':''}" id="pago-n" onclick="wizSetPago(false)">Ainda vou pagar</button>
         </div>
       </div>
       ${pessoaOpts?`<div class="fld"><label>Pessoa</label><select id="w-pessoa"><option value="">—</option>${pessoaOpts}</select></div>`:''}
@@ -1519,10 +1570,8 @@ function renderDespesaWizard(w, body, foot){
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>Voltar
       </div>
       <div class="fld"><label>Descrição</label><input id="w-desc" placeholder="Ex: Restaurante, loja..." value="${d.descricao||''}"></div>
-      <div class="row2">
-        <div class="fld"><label>Valor (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}"></div>
-        <div class="fld"><label>Data da compra</label><input id="w-date" type="date" value="${d.data||hoje}" oninput="atualizarPreviewFatura(this.value)"></div>
-      </div>
+      <div class="fld"><label>Valor (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}"></div>
+      <div class="fld"><label>Data da compra</label><input id="w-date" type="date" value="${d.data||hoje}" oninput="atualizarPreviewFatura(this.value)"></div>
       ${pessoaOpts?`<div class="fld"><label>Pessoa</label><select id="w-pessoa"><option value="">—</option>${pessoaOpts}</select></div>`:''}
       ${catOpts2?`<div class="fld"><label>Categoria</label><select id="w-cat"><option value="">—</option>${catOpts2}</select></div>`:''}
       <div id="fatura-preview">${d.data?previewFatura(d.data,c):''}</div>`;
@@ -1540,10 +1589,8 @@ function renderDespesaWizard(w, body, foot){
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>Voltar
       </div>
       <div class="fld"><label>Descrição</label><input id="w-desc" placeholder="Ex: Geladeira, TV..." value="${d.descricao||''}"></div>
-      <div class="row2">
-        <div class="fld"><label>Valor total (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}" oninput="atualizarPreviewParc()"></div>
-        <div class="fld"><label>Nº de parcelas</label><input id="w-parc" type="number" min="2" max="60" placeholder="Ex: 10" value="${d.parcelas||''}" oninput="atualizarPreviewParc()"></div>
-      </div>
+      <div class="fld"><label>Valor total (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}" oninput="atualizarPreviewParc()"></div>
+      <div class="fld"><label>Nº de parcelas</label><input id="w-parc" type="number" min="2" max="60" placeholder="Ex: 10" value="${d.parcelas||''}" oninput="atualizarPreviewParc()"></div>
       <div class="fld"><label>Data da compra</label><input id="w-date" type="date" value="${d.data||hoje}" oninput="atualizarPreviewParc()"></div>
       ${pessoaOpts?`<div class="fld"><label>Pessoa</label><select id="w-pessoa"><option value="">—</option>${pessoaOpts}</select></div>`:''}
       ${catOpts2?`<div class="fld"><label>Categoria</label><select id="w-cat"><option value="">—</option>${catOpts2}</select></div>`:''}
@@ -1568,8 +1615,8 @@ function renderDespesaWizard(w, body, foot){
       <div class="fld">
         <p class="wiz-q" style="font-size:14px;margin-bottom:8px">Tem fim?</p>
         <div class="bin-grp">
-          <button type="button" class="bin-btn ${d.temFim===false?'sel':''}" onclick="wizSetTemFim(false)">Não</button>
-          <button type="button" class="bin-btn ${d.temFim===true?'sel':''}" onclick="wizSetTemFim(true)">Sim</button>
+          <button type="button" class="bin-btn ${d.temFim===false?'sel':''}" data-fim-btn="nao" onclick="wizSetTemFim(false)">Não</button>
+          <button type="button" class="bin-btn ${d.temFim===true?'sel':''}" data-fim-btn="sim" onclick="wizSetTemFim(true)">Sim</button>
         </div>
       </div>
       <div id="fim-wrap" style="display:${d.temFim?'block':'none'}">
@@ -1597,8 +1644,8 @@ function renderDespesaWizard(w, body, foot){
       <div class="fld">
         <p class="wiz-q" style="font-size:14px;margin-bottom:8px">Tem fim?</p>
         <div class="bin-grp">
-          <button type="button" class="bin-btn ${d.temFim===false?'sel':''}" onclick="wizSetTemFim(false)">Não</button>
-          <button type="button" class="bin-btn ${d.temFim===true?'sel':''}" onclick="wizSetTemFim(true)">Sim</button>
+          <button type="button" class="bin-btn ${d.temFim===false?'sel':''}" data-fim-btn="nao" onclick="wizSetTemFim(false)">Não</button>
+          <button type="button" class="bin-btn ${d.temFim===true?'sel':''}" data-fim-btn="sim" onclick="wizSetTemFim(true)">Sim</button>
         </div>
       </div>
       <div id="fim-wrap" style="display:${d.temFim?'block':'none'}">
@@ -1710,8 +1757,8 @@ function renderReceitaWizard(w, body, foot){
         <div class="fld">
           <p class="wiz-q" style="font-size:14px;margin-bottom:8px">Tem fim?</p>
           <div class="bin-grp">
-            <button type="button" class="bin-btn ${d.temFim===false?'sel':''}" onclick="wizSetTemFim(false)">Não</button>
-            <button type="button" class="bin-btn ${d.temFim===true?'sel':''}" onclick="wizSetTemFim(true)">Sim</button>
+            <button type="button" class="bin-btn ${d.temFim===false?'sel':''}" data-fim-btn="nao" onclick="wizSetTemFim(false)">Não</button>
+            <button type="button" class="bin-btn ${d.temFim===true?'sel':''}" data-fim-btn="sim" onclick="wizSetTemFim(true)">Sim</button>
           </div>
         </div>
         <div id="fim-wrap2" style="display:${d.temFim?'block':'none'}">
@@ -1758,6 +1805,8 @@ window.wizSetTemFim = (v)=>{
   S.wiz.data.temFim=v;
   const fw = document.getElementById('fim-wrap')||document.getElementById('fim-wrap2');
   if(fw) fw.style.display=v?'block':'none';
+  document.querySelectorAll('[data-fim-btn="sim"]').forEach(el=>el.classList.toggle('sel',v===true));
+  document.querySelectorAll('[data-fim-btn="nao"]').forEach(el=>el.classList.toggle('sel',v===false));
 };
 window.wizSetProgresso = (v)=>{
   S.wiz.data.progresso=v;
