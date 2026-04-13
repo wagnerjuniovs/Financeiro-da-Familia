@@ -637,8 +637,21 @@ function fmtDateShort(ts){
   return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
 }
 
+// Verifica se o mesAno (formato "YYYY-MM") representa um mês ainda
+// no futuro em relação a hoje. É a fonte autoritativa sobre
+// "este item ainda não chegou" — independente do campo vencimento,
+// que pode estar com a data do mês original do lançamento recorrente.
+function isFutureMesAno(mesAno){
+  if(!mesAno) return false;
+  const [ano, mes] = mesAno.split('-').map(Number);
+  const n = new Date();
+  return ano > n.getFullYear() || (ano === n.getFullYear() && mes > n.getMonth() + 1);
+}
+
 function calcStatusDespesa(item){
   if(item.status === 'pago') return 'pago';
+  // Mês futuro: nunca pode estar atrasado, independente da data de vencimento salva
+  if(isFutureMesAno(item.mesAno)) return 'pendente';
   const v = tsToDate(item.vencimento); if(!v) return 'pendente';
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   const diff = Math.floor((v - hoje)/(1000*60*60*24));
@@ -649,6 +662,8 @@ function calcStatusDespesa(item){
 
 function calcStatusReceita(item){
   if(item.status === 'recebido') return 'recebido';
+  // Mês futuro: sempre previsto
+  if(isFutureMesAno(item.mesAno)) return 'previsto';
   const d = tsToDate(item.dataRelevante); if(!d) return 'previsto';
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   if(d < hoje) return 'atrasado';
