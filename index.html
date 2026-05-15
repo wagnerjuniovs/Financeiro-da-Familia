@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR" data-theme="light">
 <head>
@@ -101,7 +102,7 @@ ul,ol{list-style:none}
 .f-more-btn svg{width:14px;height:14px}
 
 /* LIST */
-.list-wrap{max-width:1100px;margin:10px auto 0;padding:0 16px}
+.list-wrap{max-width:1100px;margin:10px auto 20px;padding:0 16px}
 .tbl{width:100%;background:var(--sur);border:1px solid var(--bdr);border-radius:var(--r-lg);border-collapse:collapse;overflow:hidden}
 .tbl th{text-align:left;padding:9px 12px;font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.06em;background:var(--sur2);border-bottom:1px solid var(--bdr)}
 .tbl td{padding:12px 12px;font-size:14px;border-bottom:1px solid var(--bdr);vertical-align:middle}
@@ -708,10 +709,8 @@ function badgeHtmlFull(item){
 
 function dataRelevante(item){
   if(item.tipo==='despesa'){
-    if(item.status==='pago') return tsToDate(item.pagamentoData)||tsToDate(item.dataRelevante);
     return tsToDate(item.vencimento)||tsToDate(item.dataRelevante);
   }
-  if(item.status==='recebido') return tsToDate(item.pagamentoData)||tsToDate(item.dataRelevante);
   return tsToDate(item.dataRelevante);
 }
 
@@ -878,8 +877,7 @@ function renderHome(app){
     filtered = filtered.filter(t=>{
       const st = getStatus(t);
       if(f.status==='pago') return st==='pago'||st==='recebido';
-      if(f.status==='pendente') return st==='pendente'||st==='prestes'||st==='previsto';
-      if(f.status==='atrasado') return st==='vencida'||st==='atrasado';
+      if(f.status==='pendente') return st!=='pago'&&st!=='recebido';
       return st===f.status;
     });
   }
@@ -888,18 +886,23 @@ function renderHome(app){
   if(f.cartaoId) filtered = filtered.filter(t=>t.cartaoId===f.cartaoId);
   if(f.contaId) filtered = filtered.filter(t=>t.contaId===f.contaId);
 
-  // Sort by data relevante
+  // Sort by status group first, then by due/relevant date
   filtered.sort((a,b)=>{
-    const da = dataRelevante(a), db2 = dataRelevante(b);
+    const statusRank = (item)=>{
+      const st = getStatus(item);
+      if(st==='vencida'||st==='atrasado') return 0;
+      if(st==='pendente'||st==='prestes'||st==='previsto') return 1;
+      return 2;
+    };
+    const dateForSort = (item)=>{
+      if(item.tipo==='despesa') return tsToDate(item.vencimento)||dataRelevante(item);
+      return dataRelevante(item);
+    };
+    const rankDiff = statusRank(a) - statusRank(b);
+    if(rankDiff!==0) return rankDiff;
+    const da = dateForSort(a), db2 = dateForSort(b);
     if(!da&&!db2) return 0; if(!da) return 1; if(!db2) return -1;
-    const diff = da - db2;
-    if(diff!==0) return diff;
-    // Tie: open first
-    const stA = getStatus(a), stB = getStatus(b);
-    const openSt = ['pendente','previsto','prestes','vencida','atrasado'];
-    const aOpen = openSt.includes(stA)?0:1;
-    const bOpen = openSt.includes(stB)?0:1;
-    return aOpen - bOpen;
+    return da - db2;
   });
 
 
@@ -925,8 +928,7 @@ function renderHome(app){
   const statusOpts = `
     <option value="todos" ${f.status==='todos'?'selected':''}>Todos os status</option>
     <option value="pago" ${f.status==='pago'?'selected':''}>Pago / recebido</option>
-    <option value="pendente" ${f.status==='pendente'?'selected':''}>Pendente</option>
-    <option value="atrasado" ${f.status==='atrasado'?'selected':''}>Atrasado</option>`;
+    <option value="pendente" ${f.status==='pendente'?'selected':''}>Pendente</option>`;
 
   const tipoOpts = `
     <option value="todos" ${f.tipo==='todos'?'selected':''}>Todos</option>
@@ -1078,7 +1080,7 @@ function renderHome(app){
           </div>` : `
           <table class="tbl">
             <thead><tr>
-              <th>Data</th><th>Tipo</th><th>Descrição</th><th>Pessoa</th><th>Categoria</th><th>Origem</th><th>Status</th>
+              <th>Vencimento</th><th>Tipo</th><th>Descrição</th><th>Pessoa</th><th>Categoria</th><th>Origem</th><th>Status</th>
               <th style="text-align:right">Valor</th><th></th>
             </tr></thead>
             <tbody>${tableRows}</tbody>
@@ -1160,7 +1162,7 @@ function tipoContaLabel(t){
   return m[t]||t||'';
 }
 function statusLabel(s){
-  const m={pago:'Pago / recebido',pendente:'Pendente',atrasado:'Atrasado'};
+  const m={pago:'Pago / recebido',pendente:'Pendente'};
   return m[s]||s;
 }
 
@@ -1253,6 +1255,7 @@ function openSheet(id){
   if(!t) return;
   const st = getStatus(t);
   const dr = dataRelevante(t);
+  const dateLabel = t.tipo==='despesa' ? 'Vencimento' : 'Previsão';
   const origem = t.cartaoId ? nome('cartoes',t.cartaoId) : t.contaId ? nome('contas',t.contaId) : t.formaPagamento||'—';
   const parcela = t.totalParcelas ? `${t.parcelaAtual}/${t.totalParcelas}` : '';
   const descBase = t.descricaoBase || t.descricao || '';
@@ -1271,7 +1274,7 @@ function openSheet(id){
     <div class="sh-title">${descBase}${parcela?` <span style="font-size:14px;color:var(--txt3)">${parcela}</span>`:''}</div>
     <div class="sh-sub">${t.tipo==='receita'?'↓ Receita':'↑ Despesa'}</div>
     <div class="sh-detail-row"><span class="sh-detail-lbl">Valor</span><span class="sh-detail-val ${t.tipo==='receita'?'text-green':''}">${fmt(t.valor)}</span></div>
-    <div class="sh-detail-row"><span class="sh-detail-lbl">Data</span><span class="sh-detail-val">${dr?fmtDate(dr):'—'}</span></div>
+    <div class="sh-detail-row"><span class="sh-detail-lbl">${dateLabel}</span><span class="sh-detail-val">${dr?fmtDate(dr):'—'}</span></div>
     ${t.pessoaId?`<div class="sh-detail-row"><span class="sh-detail-lbl">Pessoa</span><span class="sh-detail-val">${nome('pessoas',t.pessoaId)}</span></div>`:''}
     ${t.catId?`<div class="sh-detail-row"><span class="sh-detail-lbl">Categoria</span><span class="sh-detail-val">${nome('cats',t.catId)}</span></div>`:''}
     <div class="sh-detail-row"><span class="sh-detail-lbl">Origem</span><span class="sh-detail-val">${origem}</span></div>
@@ -1344,9 +1347,21 @@ window.confirmDelete = (id)=>{
   if(t.recorrenciaId){
     openDeleteRecorrencia(id, t);
   } else {
-    if(confirm('Excluir este lançamento?')) deleteItemAndRender(id);
+    openDeleteLancamento(id);
   }
 };
+
+function openDeleteLancamento(id){
+  openModal('Excluir lançamento');
+  document.getElementById('m-body').innerHTML = `
+    <p style="font-size:14px;color:var(--txt2);margin-bottom:14px">Tem certeza que deseja excluir este lançamento?</p>
+    <div class="choices">
+      <div class="ch-card" onclick="deleteOnlyThis('${id}')">
+        <div><div class="ch-label">Excluir lançamento</div><div class="ch-sub">Esta ação não pode ser desfeita</div></div>
+      </div>
+    </div>`;
+  document.getElementById('m-foot').innerHTML = `<button class="btn btn-ghost btn-full" onclick="closeModal()">Cancelar</button>`;
+}
 
 function openDeleteRecorrencia(id, t){
   openModal('Excluir lançamento');
@@ -1404,12 +1419,13 @@ function openEditForm(id, t){
   const pessoaOpts = S.data.pessoas.filter(p=>p.status!=='inativo').map(p=>`<option value="${p.id}" ${t.pessoaId===p.id?'selected':''}>${p.nome}</option>`).join('');
   const catOpts2 = S.data.cats.filter(c=>c.status!=='inativo').map(c=>`<option value="${c.id}" ${t.catId===c.id?'selected':''}>${c.nome}</option>`).join('');
   const dr = dataRelevante(t);
+  const dateLabel = t.tipo==='despesa' ? 'Vencimento' : 'Previsão';
   const dateStr = dr ? `${dr.getFullYear()}-${String(dr.getMonth()+1).padStart(2,'0')}-${String(dr.getDate()).padStart(2,'0')}` : '';
 
   document.getElementById('m-body').innerHTML = `
     <div class="fld"><label>Descrição</label><input id="e-desc" value="${t.descricao||''}"></div>
     <div class="fld"><label>Valor (R$)</label><input id="e-val" type="number" step="0.01" value="${t.valor||''}"></div>
-    <div class="fld"><label>Data</label><input id="e-date" type="date" value="${dateStr}"></div>
+    <div class="fld"><label>${dateLabel}</label><input id="e-date" type="date" value="${dateStr}"></div>
     ${S.data.pessoas.length?`<div class="fld"><label>Pessoa</label><select id="e-pessoa"><option value="">—</option>${pessoaOpts}</select></div>`:''}
     ${S.data.cats.length?`<div class="fld"><label>Categoria</label><select id="e-cat"><option value="">—</option>${catOpts2}</select></div>`:''}
     `;
