@@ -586,7 +586,7 @@ ul,ol{list-style:none}
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import {
   getFirestore, collection, doc, getDocs, addDoc, updateDoc, deleteDoc,
-  query, where, orderBy, writeBatch, getDoc, setDoc
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 // ─── FIREBASE ───────────────────────────────────────────────────────────────
@@ -611,6 +611,7 @@ const S = {
   data: { trans:[], cartoes:[], contas:[], pessoas:[], cats:[] },
   wiz: null, // wizard state
   editItem: null,
+  saving: false,
 };
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -620,6 +621,97 @@ const MESES_SHORT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out'
 function fmt(v){ return 'R$ ' + Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
 function mesAnoStr(m,a){ return `${String(a)}-${String(m+1).padStart(2,'0')}`; }
+
+const OPEN_ENDED_HORIZON_MONTHS = 36;
+
+function daysInMonth(year, month){
+  return new Date(year, month+1, 0).getDate();
+}
+
+function addMonthsClamped(date, months, preferredDay=date.getDate()){
+  const first = new Date(date.getFullYear(), date.getMonth()+months, 1, 12, 0, 0, 0);
+  first.setDate(Math.min(Number(preferredDay)||1, daysInMonth(first.getFullYear(), first.getMonth())));
+  return first;
+}
+
+function sameCalendarDate(a,b){
+  return !!a && !!b && a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+}
+
+function monthDistance(from, to){
+  return (to.getFullYear()-from.getFullYear())*12 + (to.getMonth()-from.getMonth());
+}
+
+function parseDateInput(value){
+  if(!value) return null;
+  const d = new Date(value+'T12:00:00');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function splitAmountInCents(total, count){
+  const cents = Math.round(Number(total)*100);
+  const base = Math.floor(cents/count);
+  const remainder = cents-(base*count);
+  return Array.from({length:count},(_,i)=>(base+(i<remainder?1:0))/100);
+}
+
+function newRecurrenceId(){
+  if(globalThis.crypto?.randomUUID) return `rec_${globalThis.crypto.randomUUID()}`;
+  return `rec_${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+}
+
+function openEndedMonthsFrom(startDate){
+  const now = new Date();
+  const horizon = addMonthsClamped(new Date(now.getFullYear(),now.getMonth(),1,12), OPEN_ENDED_HORIZON_MONTHS-1, 1);
+  return Math.max(1, Math.min(240, monthDistance(startDate,horizon)+1));
+}
+
+function readPositiveMoney(id, label='Valor'){
+  const raw = document.getElementById(id)?.value;
+  const value = Number(raw);
+  if(!raw || !Number.isFinite(value) || value<=0){
+    alert(`${label}: informe um valor maior que zero.`);
+    return null;
+  }
+  return Math.round(value*100)/100;
+}
+
+function readInteger(id, min, max, label){
+  const value = Number(document.getElementById(id)?.value);
+  if(!Number.isInteger(value) || value<min || value>max){
+    alert(`${label}: informe um número entre ${min} e ${max}.`);
+    return null;
+  }
+  return value;
+}
+
+function requireChoice(value, message){
+  if(typeof value!=='boolean'){
+    alert(message);
+    return false;
+  }
+  return true;
+}
+
+function setSavingState(saving){
+  S.saving=saving;
+  document.querySelectorAll('#m-foot button').forEach(btn=>{ btn.disabled=saving; });
+}
+
+async function runSave(action){
+  if(S.saving) return;
+  setSavingState(true);
+  try{
+    await action();
+    closeModal();
+    render();
+  }catch(error){
+    console.error(error);
+    alert('Não foi possível salvar. Verifique sua conexão e tente novamente. Nenhum salvamento parcial foi mantido.');
+  }finally{
+    setSavingState(false);
+  }
+}
 
 function tsToDate(ts){
   if(!ts) return null;
@@ -719,7 +811,8 @@ function calcVencimentoFatura(dataCompra, diaFechamento, diaVencimento){
   const dia = compra.getDate();
   let closeMonth = compra.getMonth();
   let closeYear = compra.getFullYear();
-  if(dia > Number(diaFechamento)){
+  // Sem informação de horário, trate a compra no dia do fechamento como próxima fatura.
+  if(dia >= Number(diaFechamento)){
     closeMonth += 1;
     if(closeMonth > 11){ closeMonth = 0; closeYear += 1; }
   }
@@ -729,7 +822,8 @@ function calcVencimentoFatura(dataCompra, diaFechamento, diaVencimento){
     dueMonth += 1;
     if(dueMonth > 11){ dueMonth = 0; dueYear += 1; }
   }
-  return new Date(dueYear, dueMonth, Number(diaVencimento));
+  const validDueDay = Math.min(Number(diaVencimento), daysInMonth(dueYear,dueMonth));
+  return new Date(dueYear, dueMonth, validDueDay, 12, 0, 0, 0);
 }
 
 function nome(col, id){ return S.data[col]?.find(x=>x.id===id)?.nome||''; }
@@ -753,12 +847,32 @@ async function loadData(){
   S.data.contas = contasSnap.docs.map(d=>({id:d.id,...d.data()}));
   S.data.pessoas = pessoasSnap.docs.map(d=>({id:d.id,...d.data()}));
   S.data.cats = catsSnap.docs.map(d=>({id:d.id,...d.data()}));
+  await ensureOpenEndedSeries();
 }
 
 async function saveItem(data){
   const ref = await addDoc(collection(db,'transacoes'), data);
   S.data.trans.push({id:ref.id,...data});
   return ref.id;
+}
+
+async function saveItemsAtomic(items){
+  if(!items.length) return;
+  const batch = writeBatch(db);
+  const saved = items.map(data=>{
+    const id = data.recorrenciaId&&data.mesAno
+      ? `${data.recorrenciaId}_${data.mesAno}`
+      : doc(collection(db,'transacoes')).id;
+    const ref = doc(db,'transacoes',id);
+    batch.set(ref,data);
+    return {id,...data};
+  });
+  await batch.commit();
+  saved.forEach(item=>{
+    const idx=S.data.trans.findIndex(x=>x.id===item.id);
+    if(idx>=0) S.data.trans[idx]=item;
+    else S.data.trans.push(item);
+  });
 }
 
 async function updateItem(id, data){
@@ -773,38 +887,58 @@ async function deleteItem(id){
 }
 
 async function deleteItemsWithRecorrenciaId(recId, fromDate){
-  const toDelete = S.data.trans.filter(x=>{
-    if(x.recorrenciaId!==recId) return false;
+  const series = S.data.trans.filter(x=>x.recorrenciaId===recId);
+  const toDelete = series.filter(x=>{
     if(!fromDate) return true;
     const dr = dataRelevante(x)||tsToDate(x.dataRelevante);
     return dr && dr >= fromDate;
   });
-  for(const t of toDelete){
-    await deleteDoc(doc(db,'transacoes',t.id));
-    S.data.trans = S.data.trans.filter(x=>x.id!==t.id);
+  const deletingIds = new Set(toDelete.map(x=>x.id));
+  const remaining = series.filter(x=>!deletingIds.has(x.id));
+  const stopOpenEnded = series.some(x=>x.serieSemFim===true);
+  const batch = writeBatch(db);
+  toDelete.forEach(t=>batch.delete(doc(db,'transacoes',t.id)));
+  if(stopOpenEnded){
+    remaining.forEach(t=>batch.update(doc(db,'transacoes',t.id),{serieSemFim:false,serieEncerrada:true}));
   }
+  await batch.commit();
+  S.data.trans = S.data.trans
+    .filter(x=>!deletingIds.has(x.id))
+    .map(x=>stopOpenEnded&&x.recorrenciaId===recId?{...x,serieSemFim:false,serieEncerrada:true}:x);
 }
 
-async function updateItemsWithRecorrenciaId(recId, fromDate, changes){
+async function updateItemsWithRecorrenciaId(recId, fromDate, changes, newStartDate=null){
   const toUpd = S.data.trans.filter(x=>{
     if(x.recorrenciaId!==recId) return false;
     if(!fromDate) return true;
     const dr = dataRelevante(x)||tsToDate(x.dataRelevante);
     return dr && dr >= fromDate;
+  }).sort((a,b)=>(dataRelevante(a)||0)-(dataRelevante(b)||0));
+  const batch = writeBatch(db);
+  const updates = toUpd.map((t,i)=>{
+    const itemChanges={...changes};
+    if(newStartDate){
+      const nextDate=addMonthsClamped(newStartDate,i,newStartDate.getDate());
+      itemChanges.dataRelevante=nextDate;
+      itemChanges.mesAno=mesAnoStr(nextDate.getMonth(),nextDate.getFullYear());
+      if(t.tipo==='despesa') itemChanges.vencimento=nextDate;
+    }
+    batch.update(doc(db,'transacoes',t.id),itemChanges);
+    return {id:t.id,changes:itemChanges};
   });
-  for(const t of toUpd){
-    await updateDoc(doc(db,'transacoes',t.id), changes);
-    const idx = S.data.trans.findIndex(x=>x.id===t.id);
-    if(idx>=0) S.data.trans[idx] = {...S.data.trans[idx],...changes};
-  }
+  await batch.commit();
+  updates.forEach(({id,changes:itemChanges})=>{
+    const idx = S.data.trans.findIndex(x=>x.id===id);
+    if(idx>=0) S.data.trans[idx] = {...S.data.trans[idx],...itemChanges};
+  });
 }
 
 // ─── RECORRÊNCIA GENERATOR ───────────────────────────────────────────────────
 function gerarRecorrencias(base, dataInicio, meses, recId, tipo){
   const items = [];
+  const preferredDay=Number(base.serieDia)||dataInicio.getDate();
   for(let i=0;i<meses;i++){
-    const d = new Date(dataInicio);
-    d.setMonth(d.getMonth()+i);
+    const d = addMonthsClamped(dataInicio,i,preferredDay);
     const ma = mesAnoStr(d.getMonth(), d.getFullYear());
     if(tipo==='despesa'){
       items.push({...base, recorrenciaId:recId, dataRelevante:d, vencimento:d, mesAno:ma, status:'pendente'});
@@ -818,12 +952,14 @@ function gerarRecorrencias(base, dataInicio, meses, recId, tipo){
 // Parcelamento: gera N parcelas no cartão
 function gerarParcelas(base, primeiraFatura, totalParcelas, recId){
   const items = [];
+  const amounts=splitAmountInCents(base.valorTotal??base.valor,totalParcelas);
+  const preferredDay=Number(base.serieDia)||primeiraFatura.getDate();
   for(let i=0;i<totalParcelas;i++){
-    const d = new Date(primeiraFatura);
-    d.setMonth(d.getMonth()+i);
+    const d = addMonthsClamped(primeiraFatura,i,preferredDay);
     const ma = mesAnoStr(d.getMonth(), d.getFullYear());
     items.push({
       ...base,
+      valor: amounts[i],
       recorrenciaId: recId,
       dataRelevante: d, vencimento: d, mesAno: ma,
       parcelaAtual: i+1, totalParcelas,
@@ -832,6 +968,29 @@ function gerarParcelas(base, primeiraFatura, totalParcelas, recId){
     });
   }
   return items;
+}
+
+async function ensureOpenEndedSeries(){
+  const groups = new Map();
+  S.data.trans.forEach(item=>{
+    if(!item.recorrenciaId||item.serieSemFim!==true||item.serieEncerrada===true) return;
+    if(!groups.has(item.recorrenciaId)) groups.set(item.recorrenciaId,[]);
+    groups.get(item.recorrenciaId).push(item);
+  });
+  const now = new Date();
+  const horizon = addMonthsClamped(new Date(now.getFullYear(),now.getMonth(),1,12),OPEN_ENDED_HORIZON_MONTHS-1,1);
+  for(const [recId,series] of groups){
+    series.sort((a,b)=>(dataRelevante(a)||0)-(dataRelevante(b)||0));
+    const last=series.at(-1);
+    const lastDate=dataRelevante(last);
+    const missing=Math.min(240,monthDistance(lastDate,horizon));
+    if(missing<=0) continue;
+    const base={...last,criadoEm:new Date()};
+    ['id','dataRelevante','vencimento','mesAno','status','pagamentoData','parcelaAtual','totalParcelas'].forEach(k=>delete base[k]);
+    const start=addMonthsClamped(lastDate,1,Number(base.serieDia)||lastDate.getDate());
+    const items=gerarRecorrencias(base,start,missing,recId,last.tipo);
+    await saveItemsAtomic(items);
+  }
 }
 
 // ─── RENDER ENGINE ───────────────────────────────────────────────────────────
@@ -845,17 +1004,7 @@ function renderHome(app){
   const mesStr = mesAnoStr(S.mes, S.ano);
   let trans = S.data.trans.filter(t=> t.mesAno === mesStr);
 
-  // Calcular resumo
-  let totalRec=0, totalDesp=0;
-  trans.forEach(t=>{
-    if(t.tipo==='receita'&&t.status==='recebido') totalRec+=Number(t.valor||0);
-    if(t.tipo==='despesa'&&t.status==='pago') totalDesp+=Number(t.valor||0);
-    // Para receitas previstas, contar na estimativa também?
-    // Prompt diz: 3 indicadores. Usar apenas confirmadas/pagas.
-  });
-  // Actually let's count predicted too for a forecast view
-  // Re-reading prompt: "Receitas do mês / Despesas do mês / Saldo"
-  // Let's include previstas/pendentes for a full picture
+  // Resumo de competência: inclui valores realizados e previstos do mês.
   let totalRecAll=0, totalDespAll=0;
   trans.forEach(t=>{
     if(t.tipo==='receita') totalRecAll+=Number(t.valor||0);
@@ -868,6 +1017,7 @@ function renderHome(app){
   const vencidas = trans.filter(t=>t.tipo==='despesa'&&calcStatusDespesa(t)==='vencida').length;
   const prestes = trans.filter(t=>t.tipo==='despesa'&&calcStatusDespesa(t)==='prestes').length;
   const previstas = trans.filter(t=>t.tipo==='receita'&&calcStatusReceita(t)==='previsto').length;
+  const receitasAtrasadas = trans.filter(t=>t.tipo==='receita'&&calcStatusReceita(t)==='atrasado').length;
 
   // Apply filters
   let filtered = [...trans];
@@ -908,7 +1058,13 @@ function renderHome(app){
 
   // Build HTML
   const hasFilters = Object.values(f).some(v=>v&&v!=='todos');
-  const filtTotal = filtered.reduce((a,t)=>a+Number(t.valor||0),0);
+  const filtReceitas = filtered.filter(t=>t.tipo==='receita').reduce((a,t)=>a+Number(t.valor||0),0);
+  const filtDespesas = filtered.filter(t=>t.tipo==='despesa').reduce((a,t)=>a+Number(t.valor||0),0);
+  const filteredSummary = f.tipo==='receita'
+    ? `Total de receitas: <strong>${fmt(filtReceitas)}</strong>`
+    : f.tipo==='despesa'
+      ? `Total de despesas: <strong>${fmt(filtDespesas)}</strong>`
+      : `Receitas: <strong>${fmt(filtReceitas)}</strong> · Despesas: <strong>${fmt(filtDespesas)}</strong> · Saldo: <strong>${fmt(filtReceitas-filtDespesas)}</strong>`;
 
   // Chips ativos
   let chipsHtml = '';
@@ -1022,22 +1178,22 @@ function renderHome(app){
       <div class="summary">
         <div class="summary-in">
           <div class="sum-item">
-            <div class="sum-lbl">Receitas</div>
+            <div class="sum-lbl">Receitas previstas</div>
             <div class="sum-val pos">${fmt(totalRecAll)}</div>
           </div>
           <div class="sum-item">
-            <div class="sum-lbl">Despesas</div>
+            <div class="sum-lbl">Despesas previstas</div>
             <div class="sum-val">${fmt(totalDespAll)}</div>
           </div>
           <div class="sum-item">
-            <div class="sum-lbl">Saldo</div>
+            <div class="sum-lbl">Saldo previsto</div>
             <div class="sum-val ${saldo>0?'pos':saldo<0?'neg':''}">${fmt(saldo)}</div>
           </div>
         </div>
       </div>
       <div class="statusbar">
         ${pendentes+prestes+previstas>0?`<span class="schip schip-b">${pendentes+prestes+previstas} pendente${pendentes+prestes+previstas>1?'s':''}</span>`:''}
-        ${vencidas>0?`<span class="schip schip-r">${vencidas} atrasada${vencidas>1?'s':''}</span>`:''}
+        ${vencidas+receitasAtrasadas>0?`<span class="schip schip-r">${vencidas+receitasAtrasadas} em atraso</span>`:''}
       </div>
 
       <!-- Desktop filters -->
@@ -1067,7 +1223,7 @@ function renderHome(app){
         ${chipsHtml?`<div class="f-chips">${chipsHtml}</div>`:''}
       </div>
 
-      <div class="list-info">${filtered.length>0?`Mostrando ${filtered.length} ${filtered.length===1?'item':'itens'} · Total: <strong>${fmt(filtTotal)}</strong>`:''}</div>
+      <div class="list-info">${filtered.length>0?`Mostrando ${filtered.length} ${filtered.length===1?'item':'itens'} · ${filteredSummary}`:''}</div>
 
       <!-- Desktop table -->
       <div class="list-wrap tbl-wrap">
@@ -1229,7 +1385,11 @@ window.openPicker = (type, e)=>{
   if(type==='mes'){
     p.innerHTML = MESES.map((m,i)=>`<div class="pckr-item ${S.mes===i?'act':''}" onclick="selectMes(${i})">${m}</div>`).join('');
   } else {
-    const yrs = []; for(let y=2023;y<=2035;y++) yrs.push(y);
+    const dataYears=S.data.trans.map(t=>Number(String(t.mesAno||'').slice(0,4))).filter(Number.isFinite);
+    const currentYear=new Date().getFullYear();
+    const minYear=Math.min(currentYear-5,S.ano,...dataYears);
+    const maxYear=Math.max(currentYear+15,S.ano,...dataYears);
+    const yrs = []; for(let y=minYear;y<=maxYear;y++) yrs.push(y);
     p.innerHTML = yrs.map(y=>`<div class="pckr-item ${S.ano===y?'act':''}" onclick="selectAno(${y})">${y}</div>`).join('');
   }
   p.classList.add('on');
@@ -1298,13 +1458,7 @@ window.marcarPago = async(id)=>{
 window.confirmRecebimento = async(id)=>{
   const t = S.data.trans.find(x=>x.id===id);
   if(!t) return;
-  if(t.valorVariavel){
-    // Ask for real value
-    openConfirmRecvModal(t);
-  } else {
-    await updateItem(id, {status:'recebido', pagamentoData: new Date()});
-    render();
-  }
+  openConfirmRecvModal(t);
 };
 
 function openConfirmRecvModal(t){
@@ -1335,10 +1489,11 @@ window.finalizarRecebimento = async(id)=>{
   const valReal = document.getElementById('val-real');
   const upd = {status:'recebido', pagamentoData: new Date()};
   if(valReal && document.getElementById('val-diff-wrap').style.display!=='none'){
-    upd.valor = parseFloat(valReal.value)||S.data.trans.find(x=>x.id===id)?.valor;
+    const parsed=Number(valReal.value);
+    if(!Number.isFinite(parsed)||parsed<=0){ alert('Informe o valor recebido.'); return; }
+    upd.valor = Math.round(parsed*100)/100;
   }
-  await updateItem(id, upd);
-  closeModal(); render();
+  await runSave(()=>updateItem(id,upd));
 };
 
 window.confirmDelete = (id)=>{
@@ -1435,23 +1590,44 @@ function openEditForm(id, t){
 }
 
 window.saveEditForm = async(id)=>{
-  const desc = document.getElementById('e-desc')?.value||'';
-  const val = parseFloat(document.getElementById('e-val')?.value)||0;
+  const current=S.data.trans.find(x=>x.id===id);
+  if(!current) return;
+  const desc = document.getElementById('e-desc')?.value?.trim()||'';
+  if(!desc){ alert('Informe uma descrição.'); return; }
+  const val = readPositiveMoney('e-val');
+  if(val===null) return;
   const dt = document.getElementById('e-date')?.value;
-  const pessoaId = document.getElementById('e-pessoa')?.value||'';
-  const catId = document.getElementById('e-cat')?.value||'';
-  const d = dt ? new Date(dt+'T12:00:00') : null;
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida.'); return; }
+  const pessoaEl=document.getElementById('e-pessoa');
+  const catEl=document.getElementById('e-cat');
+  const pessoaId = pessoaEl?pessoaEl.value:(current.pessoaId||'');
+  const catId = catEl?catEl.value:(current.catId||'');
   const upd = {descricao:desc,valor:val,pessoaId,catId};
-  if(d){ upd.dataRelevante=d; if(S.data.trans.find(x=>x.id===id)?.tipo==='despesa') upd.vencimento=d; }
+  if(current.descricaoBase!==undefined) upd.descricaoBase=desc;
+  const originalDate=dataRelevante(current)||tsToDate(current.dataRelevante);
+  const dateChanged=!sameCalendarDate(d,originalDate);
   const ei = S.editItem;
   if(ei&&ei.scope==='future'&&ei.recId){
-    const t = S.data.trans.find(x=>x.id===id);
-    const fromDate = t ? (dataRelevante(t)||tsToDate(t.dataRelevante)) : null;
-    await updateItemsWithRecorrenciaId(ei.recId, fromDate, upd);
+    if(dateChanged){
+      const previous=S.data.trans
+        .filter(x=>x.recorrenciaId===ei.recId&&(dataRelevante(x)||0)<originalDate)
+        .sort((a,b)=>(dataRelevante(b)||0)-(dataRelevante(a)||0))[0];
+      if(previous&&d<=dataRelevante(previous)){
+        alert('A nova data precisa ser posterior ao lançamento anterior da série.');
+        return;
+      }
+    }
+    if(dateChanged) upd.serieDia=d.getDate();
+    await runSave(()=>updateItemsWithRecorrenciaId(ei.recId,originalDate,upd,dateChanged?d:null));
   } else {
-    await updateItem(id, upd);
+    if(dateChanged){
+      upd.dataRelevante=d;
+      upd.mesAno=mesAnoStr(d.getMonth(),d.getFullYear());
+      if(current.tipo==='despesa') upd.vencimento=d;
+    }
+    await runSave(()=>updateItem(id,upd));
   }
-  S.editItem=null; closeModal(); render();
 };
 
 // ─── MOBILE FILTERS SHEET ─────────────────────────────────────────────────────
@@ -1742,7 +1918,7 @@ function renderReceitaWizard(w, body, foot){
           <button type="button" class="bin-btn ${d.recebido===false?'sel':''}" data-rec-nao onclick="wizSetRecebido(false)">Não ainda</button>
         </div>
       </div>
-      </div>`;
+      `;
     foot.innerHTML = `<button class="btn btn-p btn-full" onclick="salvarSalario()">Salvar salário</button>`;
     return;
   }
@@ -1765,12 +1941,11 @@ function renderReceitaWizard(w, body, foot){
       </div>
       <div class="fld"><label>Descrição</label><input id="w-desc" placeholder="Ex: Freelance, reembolso..." value="${d.descricao||''}"></div>
       <div class="fld"><label>Valor (R$)</label><input id="w-val" type="number" step="0.01" placeholder="0,00" value="${d.valor||''}"></div>
-  if(w.screen==='extra'){
-    const hoje = todayStr();
-    const contaOpts2 = contasSelect(d.contaId);
-    const pessoaOpts = pessoasSelect(d.pessoaId);
-    const catOpts2 = catsSelect(d.catId,'receita');
-    if(!contaOpts2){
+      <div class="fld"><label>Conta de destino</label><select id="w-conta"><option value="">—</option>${contaOpts2}</select></div>
+      <div class="fld"><label>Data em que esse dinheiro entrou ou vai entrar</label><input id="w-date" type="date" value="${d.data||hoje}"></div>
+      ${pessoaOpts?`<div class="fld"><label>Pessoa</label><select id="w-pessoa"><option value="">—</option>${pessoaOpts}</select></div>`:''}
+      ${catOpts2?`<div class="fld"><label>Categoria</label><select id="w-cat"><option value="">—</option>${catOpts2}</select></div>`:''}
+      <div class="fld">
         <p class="wiz-q" style="font-size:14px;margin-bottom:8px">Esse dinheiro já entrou?</p>
         <div class="bin-grp">
           <button type="button" class="bin-btn ${d.recebido===true?'sel':''}" data-rec-sim onclick="wizSetRecebido(true)">Sim</button>
@@ -1849,7 +2024,6 @@ window.wizSetRecebido = (v)=>{
   document.querySelectorAll('[data-rec-sim]').forEach(el=>el.classList.toggle('sel',v));
   document.querySelectorAll('[data-rec-nao]').forEach(el=>el.classList.toggle('sel',!v));
 };
-window.wizSetVariavel = (v)=>{ S.wiz.data.variavel=v; };
 window.wizSetRepete = (v)=>{
   S.wiz.data.repete=v;
   const rw = document.getElementById('repete-wrap');
@@ -1881,9 +2055,14 @@ window.atualizarPreviewParc = ()=>{
   if(val&&parc&&dt&&c){
     const d = new Date(dt+'T12:00:00');
     const v1 = calcVencimentoFatura(d, c.diaFechamento, c.diaVencimento);
-    const vlast = new Date(v1); vlast.setMonth(vlast.getMonth()+parc-1);
+    const vlast = addMonthsClamped(v1,parc-1,v1.getDate());
+    const amounts = splitAmountInCents(val,parc);
+    const valuesDiffer = amounts.some(x=>x!==amounts[0]);
+    const installmentText = valuesDiffer
+      ? `${parc} parcelas — primeira de ${fmt(amounts[0])} e demais de ${fmt(amounts.at(-1))}`
+      : `${parc}x de ${fmt(amounts[0])}`;
     p.innerHTML = `<div class="info-box">
-      ${parc}x de ${fmt(val/parc)}<br>
+      ${installmentText}<br>
       Primeira parcela: fatura com vencimento em ${fmtDate(v1)}<br>
       Última parcela: ${fmtDate(vlast)}
     </div>`;
@@ -1892,9 +2071,13 @@ window.atualizarPreviewParc = ()=>{
 
 // ─── SAVE FUNCTIONS ───────────────────────────────────────────────────────────
 function getCommonFields(){
+  const descricao=document.getElementById('w-desc')?.value?.trim()||'';
+  if(!descricao){ alert('Informe uma descrição.'); return null; }
+  const valor=readPositiveMoney('w-val');
+  if(valor===null) return null;
   return {
-    descricao: document.getElementById('w-desc')?.value||'',
-    valor: parseFloat(document.getElementById('w-val')?.value)||0,
+    descricao,
+    valor,
     pessoaId: document.getElementById('w-pessoa')?.value||'',
     catId: document.getElementById('w-cat')?.value||'',
   };
@@ -1902,11 +2085,14 @@ function getCommonFields(){
 
 window.salvarAvulsa = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
+  if(!requireChoice(S.wiz.data.pago,'Informe se a despesa já foi paga.')) return;
   const dt = document.getElementById('w-date')?.value;
   const venc = document.getElementById('w-venc')?.value;
   const forma = document.getElementById('w-forma')?.value||'';
   const pago = S.wiz.data.pago===true;
-  const d = new Date((dt||todayStr())+'T12:00:00');
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida para a compra.'); return; }
   const item = {
     tipo:'despesa', subTipo:'avulsa',
     ...cf, formaPagamento:forma,
@@ -1916,16 +2102,22 @@ window.salvarAvulsa = async()=>{
     criadoEm: new Date()
   };
   if(pago){ item.pagamentoData=d; item.vencimento=d; }
-  else { const vd = new Date((venc||dt||todayStr())+'T12:00:00'); item.vencimento=vd; item.dataRelevante=vd; item.mesAno=mesAnoStr(vd.getMonth(),vd.getFullYear()); }
-  await saveItem(item);
-  closeModal(); render();
+  else {
+    const vd = parseDateInput(venc);
+    if(!vd){ alert('Informe uma data válida de vencimento.'); return; }
+    item.vencimento=vd; item.dataRelevante=vd; item.mesAno=mesAnoStr(vd.getMonth(),vd.getFullYear());
+  }
+  await runSave(()=>saveItem(item));
 };
 
 window.salvarCartaoAvista = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
   const dt = document.getElementById('w-date')?.value;
   const c = getCartao(S.wiz.data.cartaoId);
-  const d = new Date((dt||todayStr())+'T12:00:00');
+  if(!c){ alert('Selecione um cartão válido.'); return; }
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida para a compra.'); return; }
   const venc = calcVencimentoFatura(d, c.diaFechamento, c.diaVencimento);
   const item = {
     tipo:'despesa', subTipo:'cartao_avista',
@@ -1934,106 +2126,118 @@ window.salvarCartaoAvista = async()=>{
     mesAno: mesAnoStr(venc.getMonth(), venc.getFullYear()),
     status: 'pendente', criadoEm: new Date()
   };
-  await saveItem(item);
-  closeModal(); render();
+  await runSave(()=>saveItem(item));
 };
 
 window.salvarParcelado = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
   const dt = document.getElementById('w-date')?.value;
-  const parc = parseInt(document.getElementById('w-parc')?.value)||2;
+  const parc = readInteger('w-parc',2,60,'Número de parcelas');
+  if(parc===null) return;
   const c = getCartao(S.wiz.data.cartaoId);
-  const d = new Date((dt||todayStr())+'T12:00:00');
+  if(!c){ alert('Selecione um cartão válido.'); return; }
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida para a compra.'); return; }
   const v1 = calcVencimentoFatura(d, c.diaFechamento, c.diaVencimento);
-  const recId = `rec_${Date.now()}`;
-  const valorParc = cf.valor/parc;
+  const recId = newRecurrenceId();
   const items = gerarParcelas({
     tipo:'despesa', subTipo:'cartao_parcelado',
-    ...cf, valor:valorParc, descricaoBase:cf.descricao,
+    ...cf, valorTotal:cf.valor, descricaoBase:cf.descricao, serieDia:Number(c.diaVencimento),
     cartaoId:S.wiz.data.cartaoId,
     dataCompra:d, criadoEm:new Date()
   }, v1, parc, recId);
-  for(const it of items) await saveItem(it);
-  closeModal(); render();
+  await runSave(()=>saveItemsAtomic(items));
 };
 
 window.salvarCartaoRecorrente = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
+  if(!requireChoice(S.wiz.data.temFim,'Informe se a recorrência tem uma duração definida.')) return;
   const dt = document.getElementById('w-date')?.value;
-  const meses = parseInt(document.getElementById('w-meses')?.value)||36;
   const temFim = S.wiz.data.temFim===true;
-  const totalMeses = temFim ? meses : 36;
   const c = getCartao(S.wiz.data.cartaoId);
-  const d = new Date((dt||todayStr())+'T12:00:00');
+  if(!c){ alert('Selecione um cartão válido.'); return; }
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida para a primeira cobrança.'); return; }
   const v1 = calcVencimentoFatura(d, c.diaFechamento, c.diaVencimento);
-  const recId = `rec_${Date.now()}`;
-  const base = { tipo:'despesa', subTipo:'cartao_recorrente', ...cf, cartaoId:S.wiz.data.cartaoId, dataCompra:d, criadoEm:new Date() };
+  const meses = temFim?readInteger('w-meses',1,120,'Duração'):openEndedMonthsFrom(v1);
+  if(meses===null) return;
+  const totalMeses = meses;
+  const recId = newRecurrenceId();
+  const base = { tipo:'despesa', subTipo:'cartao_recorrente', ...cf, cartaoId:S.wiz.data.cartaoId, dataCompra:d, criadoEm:new Date(), serieSemFim:!temFim, serieDia:Number(c.diaVencimento) };
   const items = gerarRecorrencias(base, v1, totalMeses, recId, 'despesa');
-  for(const it of items) await saveItem(it);
-  closeModal(); render();
+  await runSave(()=>saveItemsAtomic(items));
 };
 
 window.salvarRecorrente = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
+  if(!requireChoice(S.wiz.data.temFim,'Informe se a recorrência tem uma duração definida.')) return;
+  if(!requireChoice(S.wiz.data.progresso,'Informe se deseja acompanhar o progresso mês a mês.')) return;
   const dt = document.getElementById('w-date')?.value;
   const forma = document.getElementById('w-forma')?.value||'';
-  const meses = parseInt(document.getElementById('w-meses')?.value)||36;
   const temFim = S.wiz.data.temFim===true;
-  const totalMeses = temFim ? meses : 36;
   const progresso = S.wiz.data.progresso===true;
-  const d = new Date((dt||todayStr())+'T12:00:00');
-  const recId = `rec_${Date.now()}`;
-  const base = { tipo:'despesa', subTipo:'recorrente', ...cf, formaPagamento:forma, acompanharProgresso:progresso, criadoEm:new Date() };
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida para o primeiro vencimento.'); return; }
+  const meses = temFim?readInteger('w-meses',1,120,'Duração'):openEndedMonthsFrom(d);
+  if(meses===null) return;
+  const totalMeses = meses;
+  const recId = newRecurrenceId();
+  const base = { tipo:'despesa', subTipo:'recorrente', ...cf, formaPagamento:forma, acompanharProgresso:progresso, criadoEm:new Date(), serieSemFim:!temFim, serieDia:d.getDate() };
   const items = gerarRecorrencias(base, d, totalMeses, recId, 'despesa');
   if(progresso&&temFim){
     items.forEach((it,i)=>{ it.parcelaAtual=i+1; it.totalParcelas=totalMeses; it.descricaoBase=cf.descricao; });
   }
-  for(const it of items) await saveItem(it);
-  closeModal(); render();
+  await runSave(()=>saveItemsAtomic(items));
 };
 
 window.salvarSalario = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
+  if(!requireChoice(S.wiz.data.recebido,'Informe se o salário já entrou.')) return;
   const dt = document.getElementById('w-date')?.value;
   const contaId = document.getElementById('w-conta')?.value||'';
+  if(!contaId){ alert('Selecione a conta de destino.'); return; }
   const recebido = S.wiz.data.recebido===true;
-  const d = new Date((dt||todayStr())+'T12:00:00');
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida.'); return; }
   const ma = mesAnoStr(d.getMonth(), d.getFullYear());
   const item = { tipo:'receita', subTipo:'salario', ...cf, contaId, dataRelevante:d, mesAno:ma, status:recebido?'recebido':'previsto', criadoEm:new Date() };
   if(recebido) item.pagamentoData=d;
-  await saveItem(item);
-  closeModal(); render();
+  await runSave(()=>saveItem(item));
 };
 
 window.salvarEntradaExtra = async()=>{
   const cf = getCommonFields();
+  if(!cf) return;
+  if(!requireChoice(S.wiz.data.recebido,'Informe se o dinheiro já entrou.')) return;
+  if(!requireChoice(S.wiz.data.repete,'Informe se esta entrada deve repetir todo mês.')) return;
   const dt = document.getElementById('w-date')?.value;
   const contaId = document.getElementById('w-conta')?.value||'';
+  if(!contaId){ alert('Selecione a conta de destino.'); return; }
   const recebido = S.wiz.data.recebido===true;
   const repete = S.wiz.data.repete===true;
   const temFim = S.wiz.data.temFim===true;
-  const meses = parseInt(document.getElementById('w-meses')?.value)||36;
-  const d = new Date((dt||todayStr())+'T12:00:00');
+  if(repete&&!requireChoice(S.wiz.data.temFim,'Informe se a repetição tem uma duração definida.')) return;
+  const d = parseDateInput(dt);
+  if(!d){ alert('Informe uma data válida.'); return; }
 
   if(!repete){
     const ma = mesAnoStr(d.getMonth(), d.getFullYear());
     const it = { tipo:'receita', subTipo:'entrada_extra', ...cf, contaId, dataRelevante:d, mesAno:ma, status:recebido?'recebido':'previsto', criadoEm:new Date() };
     if(recebido) it.pagamentoData=d;
-    await saveItem(it);
+    await runSave(()=>saveItem(it));
   } else {
-    const totalMeses = temFim ? meses : 36;
-    const recId = `rec_${Date.now()}`;
-    for(let i=0;i<totalMeses;i++){
-      const md = new Date(d); md.setMonth(md.getMonth()+i);
-      const ma = mesAnoStr(md.getMonth(), md.getFullYear());
-      const isFirst = i===0;
-      const st = (isFirst&&recebido)?'recebido':'previsto';
-      const it = { tipo:'receita', subTipo:'entrada_extra', ...cf, contaId, dataRelevante:md, mesAno:ma, status:st, recorrenciaId:recId, criadoEm:new Date() };
-      if(isFirst&&recebido) it.pagamentoData=d;
-      await saveItem(it);
-    }
+    const meses = temFim?readInteger('w-meses',1,120,'Duração'):openEndedMonthsFrom(d);
+    if(meses===null) return;
+    const recId = newRecurrenceId();
+    const base={tipo:'receita',subTipo:'entrada_extra',...cf,contaId,criadoEm:new Date(),serieSemFim:!temFim,serieDia:d.getDate()};
+    const items=gerarRecorrencias(base,d,meses,recId,'receita');
+    if(recebido){ items[0].status='recebido'; items[0].pagamentoData=d; }
+    await runSave(()=>saveItemsAtomic(items));
   }
-  closeModal(); render();
 };
 
 // ─── CADASTROS FORMS ──────────────────────────────────────────────────────────
@@ -2048,10 +2252,21 @@ window.editCadastro = (tab, id)=>{
   renderCadastroForm(tab, item);
 };
 window.deleteCadastro = async(tab, id)=>{
+  const fieldByTab={pessoas:'pessoaId',categorias:'catId',cartoes:'cartaoId',contas:'contaId'};
+  const referenceField=fieldByTab[tab];
+  if(referenceField&&S.data.trans.some(t=>t[referenceField]===id)){
+    alert('Este cadastro já é usado em lançamentos. Para preservar o histórico, marque-o como inativo em vez de excluir.');
+    return;
+  }
   if(!confirm('Excluir este cadastro?')) return;
-  await deleteDoc(doc(db, getCadCol(tab), id));
-  S.data[getCadKey(tab)] = S.data[getCadKey(tab)].filter(x=>x.id!==id);
-  render();
+  try{
+    await deleteDoc(doc(db, getCadCol(tab), id));
+    S.data[getCadKey(tab)] = S.data[getCadKey(tab)].filter(x=>x.id!==id);
+    render();
+  }catch(error){
+    console.error(error);
+    alert('Não foi possível excluir o cadastro. Tente novamente.');
+  }
 };
 
 function getCadTitle(t){ return {pessoas:'Nova pessoa',categorias:'Nova categoria',cartoes:'Novo cartão',contas:'Nova conta'}[t]||'Novo'; }
@@ -2104,23 +2319,30 @@ window.saveCadastro = async(tab, id)=>{
 
   if(tab==='categorias') data.tipo = document.getElementById('cf-tipo')?.value||'despesa';
   if(tab==='cartoes'){
-    data.diaFechamento = parseInt(document.getElementById('cf-fecha')?.value)||1;
-    data.diaVencimento = parseInt(document.getElementById('cf-vence')?.value)||10;
-    data.limite = parseFloat(document.getElementById('cf-limite')?.value)||0;
+    const fechamento=readInteger('cf-fecha',1,31,'Dia de fechamento');
+    const vencimento=readInteger('cf-vence',1,31,'Dia de vencimento');
+    if(fechamento===null||vencimento===null) return;
+    const limiteRaw=document.getElementById('cf-limite')?.value;
+    const limite=limiteRaw===''?0:Number(limiteRaw);
+    if(!Number.isFinite(limite)||limite<0){ alert('Informe um limite válido, igual ou maior que zero.'); return; }
+    data.diaFechamento = fechamento;
+    data.diaVencimento = vencimento;
+    data.limite = Math.round(limite*100)/100;
   }
   if(tab==='contas') data.tipo = document.getElementById('cf-tipo-conta')?.value||'corrente';
 
   const col = getCadCol(tab);
   const key = getCadKey(tab);
-  if(id){
-    await updateDoc(doc(db,col,id), data);
-    const idx = S.data[key].findIndex(x=>x.id===id);
-    if(idx>=0) S.data[key][idx]={...S.data[key][idx],...data};
-  } else {
-    const ref = await addDoc(collection(db,col), data);
-    S.data[key].push({id:ref.id,...data});
-  }
-  closeModal(); render();
+  await runSave(async()=>{
+    if(id){
+      await updateDoc(doc(db,col,id), data);
+      const idx = S.data[key].findIndex(x=>x.id===id);
+      if(idx>=0) S.data[key][idx]={...S.data[key][idx],...data};
+    } else {
+      const ref = await addDoc(collection(db,col), data);
+      S.data[key].push({id:ref.id,...data});
+    }
+  });
 };
 
 // ─── HELPER SELECTS ───────────────────────────────────────────────────────────
@@ -2151,6 +2373,13 @@ function todayStr(){ const n=new Date(); return `${n.getFullYear()}-${String(n.g
     await loadData();
   } catch(e){
     console.error('Firebase error:', e);
+    document.getElementById('app').innerHTML=`<div class="loading">
+      <div class="empty-emoji">⚠️</div>
+      <div class="empty-t">Não foi possível carregar seus dados</div>
+      <div class="empty-s">Verifique sua conexão e recarregue a página. Nenhum dado novo foi criado.</div>
+      <button class="btn btn-p" onclick="location.reload()">Tentar novamente</button>
+    </div>`;
+    return;
   }
 
   document.getElementById('loading-screen').style.display='none';
